@@ -1,6 +1,11 @@
 # TonUINO
 Die DIY Musikbox (nicht nur) für Kinder
 
+# Special
+- refactor code for easy reading (tbd)
+- low power consumption (one lipo) (tbd)
+- remerge with original Put'nPlay (tbd)
+
 
 # Change Log
 
