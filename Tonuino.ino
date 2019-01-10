@@ -22,7 +22,7 @@ static char* modeName[]={"UNKNOWN","Hörspielmodus","Albummodus"
 #define MENU_CHOOSE_FOLDER    0
 
 #define MENU_MP3_NUMBERS      300
-#define MENU_MP3_MODE         310
+#define MENU_MP3_MODES         310
 #define MENU_MP3_SELECT_FILE  320  
   
 #define MENU_MP3_OK           400
@@ -37,20 +37,15 @@ static char* modeName[]={"UNKNOWN","Hörspielmodus","Albummodus"
 #define MFRC_BLOCKADDR     4
 #define MFRC_TRAILERBLOCK  7
 
-// this object stores nfc tag data
-struct nfcTagObject {
-  uint32_t cookie;
-  uint8_t version;
-  uint8_t folder;
-  uint8_t mode;
-  uint8_t special;
-};
+static uint8_t _version;
+static uint8_t _mode;
+static uint8_t _folder;
+static uint8_t _folderTracks;
+static uint8_t _track = TRACK_NONE;
+static uint8_t _special;
 
-nfcTagObject myCard;
-
-static uint16_t numTracksInFolder;
-static uint16_t currentTrack = TRACK_NONE;
-MFRC522::MIFARE_Key key; 
+static MFRC522::MIFARE_Key _key; 
+static MFRC522 mfrc522(MFRC_SS_PIN, MFRC_RST_PIN); // Create MFRC522
 
 static unsigned long timer = millis();
 static unsigned long timer2 = millis();
@@ -60,12 +55,12 @@ static void LOG(String msg) {
 }
 
 static void LOG_MODE(String msg) {
-  Serial.println(String(modeName[myCard.mode]) + " -> " + msg);
+  Serial.println(String(modeName[_mode]) + " -> " + msg);
 }
 
 static void LOG_MODE_TRACK(String msg) {
-  Serial.print(String(modeName[myCard.mode]) + " -> " + msg + ": ");
-  Serial.println(currentTrack);
+  Serial.print(String(modeName[_mode]) + " -> " + msg + ": ");
+  Serial.println(_track);
 }
 
 static void LOG_MFRC_STATUS(char* msg,MFRC522::StatusCode status) {
@@ -82,12 +77,6 @@ static void LOG_BYTE_ARRAY(String msg, byte *buffer, byte bufferSize) {
   Serial.println();
 }
 
-static void mp3NextTrack(uint16_t track);
-static void mp3Sleep(){}   //    mp3.sleep(); // Je nach Modul kommt es nicht mehr zurück aus dem Sleep!
-static bool mp3IsPlaying() { return !digitalRead(BUSY_PIN); }
-
-int voiceMenu(int startMessage, int previewFromFolder,  int numberOfOptions = 0) ;
-
 bool checkTimer(unsigned long& timer, unsigned long count){
   unsigned long cur = millis();
   match = cur > timer ; 
@@ -95,103 +84,18 @@ bool checkTimer(unsigned long& timer, unsigned long count){
   return match;
 }
 
-MFRC522 mfrc522(MFRC_SS_PIN, MFRC_RST_PIN); // Create MFRC522
+static void mp3NextTrack(uint16_t track);
+static void mp3Sleep(){}   //    mp3.sleep(); // Je nach Modul kommt es nicht mehr zurück aus dem Sleep!
+static bool mp3IsPlaying() { return !digitalRead(BUSY_PIN); }
 
-int setupCard(bool ask = false) {
-  int ret_value = MENU_MP3_ERROR;
-  if (mfrc522.PICC_ReadCardSerial() && (ask || 0 == voiceMenu( MENU_MP3_RESET_TAG, MENU_CHOOSE_OPTION , 1))) {
-    Serial.print( ask ? F("Karte reseten") : F("Neue Karte konfigurieren") );
+int mp3VoiceMenu(int startMessage, int previewFromFolder,  int numberOfOptions = 0) ;
 
-    // Ordner abfragen
-    myCard.folder = voiceMenu( MENU_MP3_NUMBERS, MENU_CHOOSE_FOLDER , 99);
-    // Wiedergabemodus abfragen
-    myCard.mode =   voiceMenu( MENU_MP3_MODE, MENU_CHOOSE_OPTION, 6);
-    // Einzelmodus -> Datei abfragen
-    if (myCard.mode == MODE_EINZEL) myCard.special = voiceMenu( MENU_MP3_SELECT_FILE, myCard.folder);
-    // Admin Funktionen   // PP wann aufgerufen ??? , there are no files 320-322 // mean 330..332
-    // else if (myCard.mode == MODE_ADMIN) myCard.special = voiceMenu( 320, MENU_CHOOSE_OPTION, 3);
-  
-    EEPROM.write(myCard.folder,1);
-    ret_value = writeCard(myCard);
-  }
-  return ret_value;
-}
 
-bool readCard(nfcTagObject *nfcTag) {
-  MFRC522::StatusCode status;
-  byte buffer[18];
-  byte size = sizeof(buffer);
-  nfcTag->cookie = 0;
-  MFRC522::PICC_Type piccType = mfrc522.PICC_GetType(mfrc522.uid.sak);
-  LOG_BYTE_ARRAY(F("Card UID:"),mfrc522.uid.uidByte, mfrc522.uid.size);
-  Serial.print(String("PICC type: ") + mfrc522.PICC_GetTypeName(piccType));
+int mfrcSetupCard(bool ask = false) ;
+bool mfrcReadCard() ;
+int mfrcWriteCard() ;
 
-  if (MFRC522::PICC_TYPE_MIFARE_UL == piccType) {
-    Serial.println(F("Ultralight - skipp Authenticating"));
-    status = MFRC522::STATUS_OK;
-  } else {
-    Serial.println(F("Authenticating using key A..."));
-    status = (MFRC522::StatusCode)mfrc522.PCD_Authenticate(
-        MFRC522::PICC_CMD_MF_AUTH_KEY_A, MFRC_BLOCKADDR, &key, &(mfrc522.uid));
-    if (status != MFRC522::STATUS_OK) {
-      LOG_MFRC_STATUS("PCD_Authenticate() failed: ",status);
-      Serial.println(F("Current data in sector:"));
-      mfrc522.PICC_DumpMifareClassicSectorToSerial(&(mfrc522.uid), &key, MFRC_SECTOR);
-      Serial.println();
-    }
-  }
-
-  if (MFRC522::STATUS_OK == status) {
-    // Read data from the block
-    Serial.println(String("Reading data from block ") + String(MFRC_BLOCKADDR) + " ...");
-    status = (MFRC522::StatusCode)mfrc522.MIFARE_Read(MFRC_BLOCKADDR, buffer, &size);
-    if (status != MFRC522::STATUS_OK) {
-      LOG_MFRC_STATUS("MIFARE_Read() failed: ",status);
-    } else {
-      LOG_BYTE_ARRAY(String("Data in block ") + String(MFRC_BLOCKADDR),buffer, 16);
-      nfcTag->cookie = (uint32_t)buffer[0] << 24 
-                      |(uint32_t)buffer[1] << 16
-                      |(uint32_t)buffer[2] << 8
-                      |(uint32_t)buffer[3];
-      nfcTag->version = buffer[4];
-      nfcTag->folder = buffer[5];
-      nfcTag->mode = buffer[6];
-      nfcTag->special = buffer[7];
-    }  
-  }
-  return status == MFRC522::STATUS_OK;
-}
-
-int writeCard(nfcTagObject nfcTag) {
-  byte buffer[16] = {0x13, 0x37, 0xb3, 0x47, // 0x1337 0xb347 magic cookie to identify our nfc tags
-                     0x01,                   // version 1
-                     nfcTag.folder,          // the folder picked by the user
-                     nfcTag.mode,            // the playback mode picked by the user
-                     nfcTag.special,         // track or function for admin cards
-                     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-  byte size = sizeof(buffer);
-  MFRC522::StatusCode status;
-
-  MFRC522::PICC_Type piccType =  mfrc522.PICC_GetType(mfrc522.uid.sak);
-  if (MFRC522::PICC_TYPE_MIFARE_UL == piccType) {
-    Serial.println(F("Ultralight - skipp Authenticating"));
-    for (int i=0; i < 4; i++) { //data is writen in blocks of 4 bytes (4 bytes per page)
-      status = (MFRC522::StatusCode) mfrc522.MIFARE_Ultralight_Write(MFRC_BLOCKADDR+i, &buffer[i*4], 4);
-    }    
-  } else {
-    Serial.println(F("Authenticating again using key B..."));
-    status = (MFRC522::StatusCode)mfrc522.PCD_Authenticate(
-        MFRC522::PICC_CMD_MF_AUTH_KEY_B, MFRC_BLOCKADDR, &key, &(mfrc522.uid));
-    if (status != MFRC522::STATUS_OK) {
-      LOG_MFRC_STATUS("PCD_Authenticate() failed: ",status);
-    } else {
-      LOG_BYTE_ARRAY(String("Writing data into block ") + String(MFRC_BLOCKADDR),buffer, 16);
-      status = (MFRC522::StatusCode)mfrc522.MIFARE_Write(MFRC_BLOCKADDR, buffer, 16);
-    }
-  }
-  if (status != MFRC522::STATUS_OK) LOG_MFRC_STATUS("MIFARE_Write() failed: ",status);
-  return status == MFRC522::STATUS_OK ? MENU_MP3_OK : MENU_MP3_ERROR ;
-}
+// DFPlayer Mini
 
 // implement a notification class,
 class Mp3Notify {
@@ -220,9 +124,8 @@ class Mp3Notify {
     }
 };
 
-// DFPlayer Mini
-SoftwareSerial mySoftwareSerial(2, 3); // RX, TX
 #define BUSY_PIN 4
+SoftwareSerial mySoftwareSerial(2, 3); // RX, TX
 static DFMiniMp3<SoftwareSerial, Mp3Notify> mp3(mySoftwareSerial);
 
 #define LONG_PRESS 1000
@@ -236,28 +139,22 @@ class TonButton : public Button {
       pinMode(pin,  INPUT_PULLUP);
     }
 
-    bool read() {
-      bool val = Button::read();
-      if (wasReleased() & m_ignoreRelease) {
-        m_ignoreRelease = false;
-        val = Button::read(); // reset / m_changed=>false ...
-      }
-      return val;
-    }
-
     bool wasReleased(String msg)  {
       LOG(m_descr + msg);
-      return wasReleased();
+      bool val = wasReleased() & !m_ignoreRelease;
+      if (wasReleased())
+            m_ignoreRelease = false;
+      return  val;
     }
 
     bool longPress(String msg)  {
       LOG(m_descr + msg);
-      m_ignoreRelease = true;
-      return pressedFor( LONG_PRESS );
+      m_ignoreRelease = pressedFor( LONG_PRESS );
+      return m_ignoreRelease;
     }
     
     int deltaByLongPressOrRelease(String msg){
-      return longPress(msg) ? 10 : wasReleased() ? 1 : 0 ;
+      return longPress(msg) ? 10 : wasReleased(msg) ? 1 : 0 ;
     }
   
   private: 
@@ -265,11 +162,140 @@ class TonButton : public Button {
     String m_descr;
 };
 
-TonButton buttonPause(A0,"Pause");
-TonButton buttonUp(A1,"UP");
-TonButton buttonDown(A2,"DOWN");
+static TonButton buttonPause(A0,"Pause");
+static TonButton buttonUp(A1,"UP");
+static TonButton buttonDown(A2,"DOWN");
 
-int voiceMenu(int startMessage, int previewFromFolder,  int numberOfOptions ) {
+static int mp3VoiceMenu(int startMessage, int previewFromFolder,  int numberOfOptions ) ;
+static void mp3PrevTrack() ;
+static void mp3FirstTrack() ;
+static void mp3NextTrack(uint16_t track) ;
+
+void setup() {
+  LOG("TonUINO - Endavour Version 2.0 - PP-Edition");
+  Serial.begin(115200); // Debug Ausgaben über die serielle Schnittstelle
+
+  // DFPlayer Mini initialisieren
+  pinMode(BUSY_PIN,    INPUT);
+  mp3.begin();
+  mp3.setVolume(15);
+
+  // NFC Leser initialisieren
+  SPI.begin();        // Init SPI bus
+  mfrc522.PCD_Init(); // Init MFRC522
+  mfrc522.PCD_DumpVersionToSerial(); // Show details of PCD - MFRC522 Card Reader
+  for (byte i = 0; i < 6; i++) {
+    _key.keyByte[i] = 0xFF;
+  }
+
+  // RESET --- ALLE DREI KNÖPFE BEIM STARTEN GEDRÜCKT HALTEN 
+  if (buttonPause.isPressed() && buttonDown.isPressed() && buttonUp.isPressed()) {
+    LOG(F("Reset -> EEPROM wird gelöscht"));
+    for (int i = 0; i < EEPROM.length(); i++) {
+      EEPROM.write(i, 0);
+    }
+  }
+
+}
+
+void loop() {
+  mp3.loop();
+  buttonPause.read();
+  buttonUp.read();
+  buttonDown.read();
+
+  if (buttonPause.longPress()) {
+      if (mp3IsPlaying()) mp3.playAdvertisement( _track );
+      else                mp3.playMp3FolderTrack( mfrcSetupCard( ) ); // rename "abgebrochen" 802 in 801 / pause will mfrcSetupCard..
+  } else if (buttonPause.wasReleased()) {
+	    if (mp3IsPlaying())	mp3.pause();
+	    else				        mp3.start();
+  } else if (buttonUp.longPress("Volume")) {
+	    mp3.increaseVolume();
+  } else if (buttonUp.wasReleased()) {
+	    mp3NextTrack(_track);
+  } else if (buttonDown.longPress("Volume")) {
+      mp3.decreaseVolume();
+  } else if (buttonDown.wasReleased()) {
+      mp3PrevTrack();
+  }	
+
+  if (checkTimer( timer, 1000)) { 
+    // RFID Karte wurde aufgelegt
+    if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+  	  if (mfrcReadCard()) {
+  		  if (MODE_UNKNWON == _mode) 
+  		       mp3.playMp3FolderTrack( mfrcSetupCard( true ) );
+  		  else mp3FirstTrack();
+  	  }
+  	  mfrc522.PICC_HaltA();
+  	  mfrc522.PCD_StopCrypto1();
+    } else if (mp3IsPlaying() && checkTimer(timer2,20000)) { // now proper way - DOES not work >> hack according https://github.com/miguelbalboa/rfid/issues/279#
+      mfrc522.PCD_Init();
+      if (!mfrc522.PICC_IsNewCardPresent()) mp3.pause;
+    }
+  }
+ 
+}
+
+//
+// MP3 - HELPER
+//
+
+static void mp3PrevTrack() {
+  if (_mode == MODE_HOERSPIEL || _mode == MODE_EINZEL || _mode == MODE_PARTY) {
+    LOG_MODE("Track von vorne spielen");
+  } else {
+    LOG_MODE("vorheriger Track");
+    if (_track != 1) _track = _track - 1;
+    if (_mode == MODE_HOERBUCH) EEPROM.write(_folder, _track);
+  }
+  mp3.playFolderTrack(_folder, _track);
+}
+
+static void mp3FirstTrack() {
+  _folderTracks = mp3.getFolderTrackCount(_folder);
+  LOG(String(_folderTracks) + " Dateien in Ordner " + _folder);
+
+  if (_mode == MODE_ALBUM) {
+    _track = 1;
+    LOG_MODE_TRACK("kompletten Ordner wiedergeben");
+  } else if (_mode == MODE_HOERSPIEL || _mode == MODE_PARTY) {
+    _track = random(1, _folderTracks + 1);
+    LOG_MODE_TRACK("zufälligen Track wiedergeben");
+  } else if (_mode == MODE_EINZEL) {
+    _track = _special;
+    LOG_MODE_TRACK("eine Datei aus dem Odrdner abspielen");
+  } else if (_mode == MODE_HOERBUCH) {
+    _track = EEPROM.read(_folder);
+    LOG_MODE_TRACK("kompletten Ordner spielen"); //   "Fortschritt merken"));
+  }
+  mp3.playFolderTrack(_folder, _track); 
+}
+
+static void mp3NextTrack(uint16_t track) {
+  // suppress next-triggern whilst card setup is running ... 
+  if ( _mode != MODE_UNKNWON && _track == track) {
+    if (_mode == MODE_PARTY) {                                        
+      _track = _track + random(1, _folderTracks ) ; // all but not current
+      LOG_MODE_TRACK("zufälliger Track");
+    } else if (_mode == MODE_HOERSPIEL || _mode == MODE_EINZEL || _track == _folderTracks) {  // random | _spezial    // Hoerbuch = EEPROM.read
+      LOG_MODE(_track == _folderTracks ? "letzter Titel beendet" : "keinen neuen Track spielen" );
+      mp3Sleep();
+    } else {
+      _track = _track + 1;
+      LOG_MODE_TRACK("nächster Track");
+    }
+    if (_track != track) {
+      _track = ( _track + _folderTracks ) % _folderTracks; 
+      mp3.playFolderTrack(_folder, _track);
+      if (_mode == MODE_HOERBUCH) EEPROM.write(_folder, _track);
+    }
+  }
+}
+
+
+static int mp3VoiceMenu(int startMessage, int previewFromFolder,  int numberOfOptions ) {
   int returnValue = 0;
   int delta = 0;
   mp3.pause();
@@ -304,122 +330,98 @@ int voiceMenu(int startMessage, int previewFromFolder,  int numberOfOptions ) {
   return returnValue;
 }
 
-static void mp3PrevTrack() {
-  if (myCard.mode == MODE_HOERSPIEL || myCard.mode == MODE_EINZEL || myCard.mode == MODE_PARTY) {
-    LOG_MODE("Track von vorne spielen");
+
+//
+// MFRC - HELPER
+//
+
+int mfrcSetupCard(bool force = false) {
+  int ret_value = MENU_MP3_ERROR;
+  if (mfrc522.PICC_ReadCardSerial() && (force || 0 == mp3VoiceMenu( MENU_MP3_RESET_TAG, MENU_CHOOSE_OPTION , 1))) {
+    Serial.print( ask ? F("Karte reseten") : F("Neue Karte konfigurieren") );
+
+    // Ordner abfragen
+    _folder = mp3VoiceMenu( MENU_MP3_NUMBERS, MENU_CHOOSE_FOLDER , 99);
+    // Wiedergabemodus abfragen
+    _mode =   mp3VoiceMenu( MENU_MP3_MODES, MENU_CHOOSE_OPTION, 6);
+    // Einzelmodus -> Datei abfragen
+    if (_mode == MODE_EINZEL) _special = mp3VoiceMenu( MENU_MP3_SELECT_FILE, _folder);
+    // Admin Funktionen   // PP wann aufgerufen ??? , there are no files 320-322 // mean 330..332
+    // else if (_mode == MODE_ADMIN) _special = mp3VoiceMenu( 320, MENU_CHOOSE_OPTION, 3);
+  
+    EEPROM.write(_folder,1);
+    ret_value = mfrcWriteCard();
+  }
+  return ret_value;
+}
+
+bool mfrcReadCard() {
+  MFRC522::StatusCode status;
+  byte buffer[18];
+  byte size = sizeof(buffer);
+  MFRC522::PICC_Type piccType = mfrc522.PICC_GetType(mfrc522.uid.sak);
+  LOG_BYTE_ARRAY(F("Card UID:"),mfrc522.uid.uidByte, mfrc522.uid.size);
+  Serial.print(String("PICC type: ") + mfrc522.PICC_GetTypeName(piccType));
+
+  if (MFRC522::PICC_TYPE_MIFARE_UL == piccType) {
+    Serial.println(F("Ultralight - skipp Authenticating"));
+    status = MFRC522::STATUS_OK;
   } else {
-    LOG_MODE("vorheriger Track");
-    if (currentTrack != 1) currentTrack = currentTrack - 1;
-    if (myCard.mode == MODE_HOERBUCH) EEPROM.write(myCard.folder, currentTrack);
-  }
-  mp3.playFolderTrack(myCard.folder, currentTrack);
-}
-
-static void mp3FirstTrack() {
-  numTracksInFolder = mp3.getFolderTrackCount(myCard.folder);
-  LOG(String(numTracksInFolder) + " Dateien in Ordner " + myCard.folder);
-
-  if (myCard.mode == MODE_ALBUM) {
-    currentTrack = 1;
-    LOG_MODE_TRACK("kompletten Ordner wiedergeben");
-  } else if (myCard.mode == MODE_HOERSPIEL || myCard.mode == MODE_PARTY) {
-    currentTrack = random(1, numTracksInFolder + 1);
-    LOG_MODE_TRACK("zufälligen Track wiedergeben");
-  } else if (myCard.mode == MODE_EINZEL) {
-    currentTrack = myCard.special;
-    LOG_MODE_TRACK("eine Datei aus dem Odrdner abspielen");
-  } else if (myCard.mode == MODE_HOERBUCH) {
-    currentTrack = EEPROM.read(myCard.folder);
-    LOG_MODE_TRACK("kompletten Ordner spielen"); //   "Fortschritt merken"));
-  }
-  mp3.playFolderTrack(myCard.folder, currentTrack); 
-}
-
-static void mp3NextTrack(uint16_t track) {
-	// Wenn eine neue Karte angelernt wird soll das Ende eines Tracks nicht   
-	if ( myCard.mode != MODE_UNKNWON && currentTrack == track) {
-    if (myCard.mode == MODE_PARTY) {                                        
-      currentTrack = currentTrack + random(1, numTracksInFolder ) ; // all but not current
-      LOG_MODE_TRACK("zufälliger Track");
-  	} else if (myCard.mode == MODE_HOERSPIEL || myCard.mode == MODE_EINZEL || currentTrack == numTracksInFolder) {  // random | myCard.spezial    // Hoerbuch = EEPROM.read
-  		LOG_MODE(currentTrack == numTracksInFolder ? "letzter Titel beendet" : "keinen neuen Track spielen" );
-  		mp3Sleep();
-  	} else {
-  		currentTrack = currentTrack + 1;
-  		LOG_MODE_TRACK("nächster Track");
-  	}
-    if (currentTrack != track) {
-      currentTrack = ( currentTrack + numTracksInFolder ) % numTracksInFolder; 
-      mp3.playFolderTrack(myCard.folder, currentTrack);
-      if (myCard.mode == MODE_HOERBUCH) EEPROM.write(myCard.folder, currentTrack);
-    }
-  }
-}
-
-void setup() {
-  LOG("TonUINO - Endavour Version 2.0 - PP-Edition");
-  Serial.begin(115200); // Debug Ausgaben über die serielle Schnittstelle
-
-  // DFPlayer Mini initialisieren
-  pinMode(BUSY_PIN,    INPUT);
-  mp3.begin();
-  mp3.setVolume(15);
-
-  // NFC Leser initialisieren
-  SPI.begin();        // Init SPI bus
-  mfrc522.PCD_Init(); // Init MFRC522
-  mfrc522.PCD_DumpVersionToSerial(); // Show details of PCD - MFRC522 Card Reader
-  for (byte i = 0; i < 6; i++) {
-    key.keyByte[i] = 0xFF;
-  }
-
-  // RESET --- ALLE DREI KNÖPFE BEIM STARTEN GEDRÜCKT HALTEN 
-  if (buttonPause.isPressed() && buttonDown.isPressed() && buttonUp.isPressed()) {
-    LOG(F("Reset -> EEPROM wird gelöscht"));
-    for (int i = 0; i < EEPROM.length(); i++) {
-      EEPROM.write(i, 0);
+    Serial.println(F("Authenticating using key A..."));
+    status = (MFRC522::StatusCode)mfrc522.PCD_Authenticate(
+        MFRC522::PICC_CMD_MF_AUTH_KEY_A, MFRC_BLOCKADDR, &_key, &(mfrc522.uid));
+    if (status != MFRC522::STATUS_OK) {
+      LOG_MFRC_STATUS("PCD_Authenticate() failed: ",status);
     }
   }
 
+  if (MFRC522::STATUS_OK == status) {
+    Serial.println(String("Reading data from block ") + String(MFRC_BLOCKADDR) + " ...");
+    status = (MFRC522::StatusCode)mfrc522.MIFARE_Read(MFRC_BLOCKADDR, buffer, &size);
+    if (status != MFRC522::STATUS_OK) {
+      LOG_MFRC_STATUS("MIFARE_Read() failed: ",status);
+    } else {
+      LOG_BYTE_ARRAY(String("Data in block ") + String(MFRC_BLOCKADDR),buffer, size);
+      uint32_t cookie = (uint32_t)buffer[0] << 24 
+                       |(uint32_t)buffer[1] << 16
+                       |(uint32_t)buffer[2] << 8
+                       |(uint32_t)buffer[3];
+      _version = buffer[4];
+      _folder = buffer[5];
+      _special = buffer[7];
+      _mode = _cookie != 322417479 || _folder == 0 ? MODE_UNKNWON : buffer[6];
+    }  
+  }
+  return status == MFRC522::STATUS_OK;
 }
 
-void loop() {
-  mp3.loop();
-  buttonPause.read();
-  buttonUp.read();
-  buttonDown.read();
+int mfrcWriteCard() {
+  byte buffer[16] = {0x13, 0x37, 0xb3, 0x47, // 0x1337 0xb347 magic cookie to identify our nfc tags
+                     0x01,                   // version 1
+                     _folder,          // the folder picked by the user
+                     _mode,            // the playback mode picked by the user
+                     _special,         // track or function for admin cards
+                     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  MFRC522::StatusCode status;
 
-  if (buttonPause.longPress()) {
-      if (mp3IsPlaying()) mp3.playAdvertisement( currentTrack );
-      else                mp3.playMp3FolderTrack( setupCard( true ) ); // rename "abgebrochen" 802 in 801 / pause will setupCard..
-  } else if (buttonPause.wasReleased()) {
-	    if (mp3IsPlaying())	mp3.pause();
-	    else				        mp3.start();
-  } else if (buttonUp.longPress("Volume")) {
-	    mp3.increaseVolume();
-  } else if (buttonUp.wasReleased()) {
-	    mp3NextTrack(currentTrack);
-  } else if (buttonDown.longPress("Volume")) {
-      mp3.decreaseVolume();
-  } else if (buttonDown.wasReleased()) {
-      mp3PrevTrack();
-  }	
-
-  if (checkTimer( timer, 1000)) { 
-    // RFID Karte wurde aufgelegt
-    if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
-  	  if (readCard(&myCard)) {
-  		  if (myCard.cookie != 322417479 || myCard.folder == 0 || MODE_UNKNWON == myCard.mode) 
-  		       mp3.playMp3FolderTrack( setupCard() );
-  		  else mp3FirstTrack();
-  	  }
-  	  mfrc522.PICC_HaltA();
-  	  mfrc522.PCD_StopCrypto1();
-    } else if (mp3IsPlaying() && checkTimer(timer2,20000)) { // now proper way - DOES not work >> hack according https://github.com/miguelbalboa/rfid/issues/279#
-      mfrc522.PCD_Init();
-      if (!mfrc522.PICC_IsNewCardPresent()) mp3.pause;
+  MFRC522::PICC_Type piccType =  mfrc522.PICC_GetType(mfrc522.uid.sak);
+  if (MFRC522::PICC_TYPE_MIFARE_UL == piccType) {
+    Serial.println(F("Ultralight - skipp Authenticating"));
+    for (int i=0; i < 4; i++) { //data is writen in blocks of 4 bytes (4 bytes per page)
+      status = (MFRC522::StatusCode) mfrc522.MIFARE_Ultralight_Write(MFRC_BLOCKADDR+i, &buffer[i*4], 4);
+    }    
+  } else {
+    Serial.println(F("Authenticating again using key B..."));
+    status = (MFRC522::StatusCode)mfrc522.PCD_Authenticate(
+        MFRC522::PICC_CMD_MF_AUTH_KEY_B, MFRC_BLOCKADDR, &_key, &(mfrc522.uid));
+    if (status != MFRC522::STATUS_OK) {
+      LOG_MFRC_STATUS("PCD_Authenticate() failed: ",status);
+    } else {
+      LOG_BYTE_ARRAY(String("Writing data into block ") + String(MFRC_BLOCKADDR),buffer, sizeof(buffer));
+      status = (MFRC522::StatusCode)mfrc522.MIFARE_Write(MFRC_BLOCKADDR, buffer, sizeof(buffer));
     }
   }
- 
+  if (status != MFRC522::STATUS_OK) LOG_MFRC_STATUS("MIFARE_Write() failed: ",status);
+  return status == MFRC522::STATUS_OK ? MENU_MP3_OK : MENU_MP3_ERROR ;
 }
 
