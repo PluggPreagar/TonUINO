@@ -22,7 +22,7 @@ static char* modeName[]={"UNKNOWN","Hörspielmodus","Albummodus"
 #define MENU_CHOOSE_FOLDER    0
 
 #define MENU_MP3_NUMBERS      300
-#define MENU_MP3_MODES         310
+#define MENU_MP3_MODES        310
 #define MENU_MP3_SELECT_FILE  320  
   
 #define MENU_MP3_OK           400
@@ -64,8 +64,10 @@ static void LOG_MODE_TRACK(String msg) {
 }
 
 static void LOG_MFRC_STATUS(char* msg,MFRC522::StatusCode status) {
+  if (status != MFRC522::STATUS_OK){
     Serial.print(msg);
     Serial.println(mfrc522.GetStatusCodeName(status));
+  }
 }
 
 static void LOG_BYTE_ARRAY(String msg, byte *buffer, byte bufferSize) {
@@ -84,12 +86,10 @@ bool checkTimer(unsigned long& timer, unsigned long count){
   return match;
 }
 
-static void mp3NextTrack(uint16_t track);
-static void mp3Sleep(){}   //    mp3.sleep(); // Je nach Modul kommt es nicht mehr zurück aus dem Sleep!
-static bool mp3IsPlaying() { return !digitalRead(BUSY_PIN); }
-
+bool mp3IsPlaying() { return !digitalRead(BUSY_PIN); }
+void mp3NextTrack(uint16_t track);
+void mp3Sleep(){}   //    mp3.sleep(); // Je nach Modul kommt es nicht mehr zurück aus dem Sleep!
 int mp3VoiceMenu(int startMessage, int previewFromFolder,  int numberOfOptions = 0) ;
-
 
 int mfrcSetupCard(bool ask = false) ;
 bool mfrcReadCard() ;
@@ -130,27 +130,112 @@ static DFMiniMp3<SoftwareSerial, Mp3Notify> mp3(mySoftwareSerial);
 
 #define LONG_PRESS 1000
 
-// adopted from JC_BUTTON
-class TonButton : public Button {
-  public:
+/*
+class Button
+{
+    public: // Special Version from JC_BUTTON
+        Button(uint8_t pin, String descr, uint32_t dbTime=25, uint8_t puEnable=true, uint8_t invert=true)
+              : m_pin(pin), m_dbTime(dbTime), m_invert(invert), m_lastChange(0), m_descr(descr + ": ") {
+          pinMode(m_pin, m_puEnable ? INPUT_PULLUP : INPUT);
+          read();
+          m_changed = false;
+        }
 
-    TonButton(uint8_t pin, String descr) 
-            : Button( pin), m_ignoreRelease(false),m_descr(descr + ": ")  {
-      pinMode(pin,  INPUT_PULLUP);
+        bool read() {
+          m_time = millis();
+          m_changed = m_time - m_lastChange < m_dbTime;
+          if (m_changed)
+          {
+              bool lastState = m_state;
+              m_state = m_invert ^ digitalRead(m_pin) ; // m_invert ? !digitalRead(m_pin) : digitalRead(m_pin);
+              m_changed = (m_state != lastState);
+              if (m_changed) {
+                m_lastChange = m_time;
+                m_changed &= !m_change_ignore;
+                m_change_ignore = false;
+              }
+          }
+          return m_state;
+
+        }
+
+        // Returns true if the button state was pressed at the last call to read().
+        // Does not cause the button to be read.
+        bool isPressed() {
+          return m_state;
+        }
+
+        // Returns true if the button state at the last call to read() was pressed,
+        // and this was a change since the previous read.
+        bool wasPressed() {
+          return m_state && m_changed;
+        }
+
+        // Returns true if the button state at the last call to read() was released,
+        // and this was a change since the previous read.
+        bool wasReleased() {
+          LOG(m_descr + msg);
+          return !m_state && m_changed;
+        }
+
+        // Returns true if the button state at the last call to read() was pressed,
+        // and has been in that state for at least the given number of milliseconds.
+        bool pressedFor(uint32_t ms) {
+          return m_state && m_time - m_lastChange >= ms;
+        }
+
+        bool ignoreNextChange(bool match)  {
+          m_change_ignore = match;
+          return match;
+        }
+
+        bool longPress(String msg)  {
+          return ignoreNextChange(m_state && m_time - m_lastChange >= ms);
+        }
+
+        int deltaByLongPressOrRelease(String msg){
+          return longPress(msg) ? 10 : wasReleased(msg) ? 1 : 0 ;
+        }
+
+        // Returns the time in milliseconds (from millis) that the button last
+        // changed state.
+        uint32_t lastChange() {
+          return m_lastChange;
+        }
+
+    private:
+        uint8_t m_pin;          // arduino pin number connected to button
+        uint32_t m_dbTime;      // debounce time (ms)
+        bool m_invert;          // if true, interpret logic low as pressed, else interpret logic high as pressed
+        bool m_state;           // current button state, true=pressed
+        bool m_changed;         // state changed since last read
+        bool m_change_ignore;          
+        uint32_t m_time;        // time of current state (ms from millis)
+        uint32_t m_lastChange;  // time of last state change (ms)
+        String m_descr;
+};
+*/
+
+class TonButton : Button 
+{
+    public: 
+      TonButton(uint8_t pin, String descr) 
+      : Button( pin ), m_descr ( descr ) {}
+
+    // tricky - assume always - longPress comes first
+    bool ignoreNextChange(bool match)  {
+      m_change_ignore = match;
+      return match;
     }
 
     bool wasReleased(String msg)  {
       LOG(m_descr + msg);
-      bool val = wasReleased() & !m_ignoreRelease;
-      if (wasReleased())
-            m_ignoreRelease = false;
-      return  val;
+      return  m_change_ignore ? false : Button::wasReleased();
     }
 
     bool longPress(String msg)  {
       LOG(m_descr + msg);
-      m_ignoreRelease = pressedFor( LONG_PRESS );
-      return m_ignoreRelease;
+      return ignoreNextChange( pressedFor( LONG_PRESS ) );
     }
     
     int deltaByLongPressOrRelease(String msg){
@@ -158,8 +243,8 @@ class TonButton : public Button {
     }
   
   private: 
-    bool m_ignoreRelease;
     String m_descr;
+    bool m_change_ignore = false;
 };
 
 static TonButton buttonPause(A0,"Pause");
@@ -298,7 +383,6 @@ static void mp3NextTrack(uint16_t track) {
 static int mp3VoiceMenu(int startMessage, int previewFromFolder,  int numberOfOptions ) {
   int returnValue = 0;
   int delta = 0;
-  mp3.pause();
   if (0 == numberOfOptions) numberOfOptions = mp3.getFolderTrackCount(previewFromFolder);
   if (startMessage != 0) mp3.playMp3FolderTrack(startMessage);
   do {
@@ -356,31 +440,27 @@ int mfrcSetupCard(bool force = false) {
 }
 
 bool mfrcReadCard() {
-  MFRC522::StatusCode status;
   byte buffer[18];
   byte size = sizeof(buffer);
+  MFRC522::StatusCode status = MFRC522::STATUS_OK;
   MFRC522::PICC_Type piccType = mfrc522.PICC_GetType(mfrc522.uid.sak);
   LOG_BYTE_ARRAY(F("Card UID:"),mfrc522.uid.uidByte, mfrc522.uid.size);
   Serial.print(String("PICC type: ") + mfrc522.PICC_GetTypeName(piccType));
 
   if (MFRC522::PICC_TYPE_MIFARE_UL == piccType) {
     Serial.println(F("Ultralight - skipp Authenticating"));
-    status = MFRC522::STATUS_OK;
   } else {
     Serial.println(F("Authenticating using key A..."));
-    status = (MFRC522::StatusCode)mfrc522.PCD_Authenticate(
+    status = mfrc522.PCD_Authenticate(
         MFRC522::PICC_CMD_MF_AUTH_KEY_A, MFRC_BLOCKADDR, &_key, &(mfrc522.uid));
-    if (status != MFRC522::STATUS_OK) {
-      LOG_MFRC_STATUS("PCD_Authenticate() failed: ",status);
-    }
+    LOG_MFRC_STATUS("PCD_Authenticate()",status);
   }
 
   if (MFRC522::STATUS_OK == status) {
     Serial.println(String("Reading data from block ") + String(MFRC_BLOCKADDR) + " ...");
-    status = (MFRC522::StatusCode)mfrc522.MIFARE_Read(MFRC_BLOCKADDR, buffer, &size);
-    if (status != MFRC522::STATUS_OK) {
-      LOG_MFRC_STATUS("MIFARE_Read() failed: ",status);
-    } else {
+    status = mfrc522.MIFARE_Read(MFRC_BLOCKADDR, buffer, &size);
+    LOG_MFRC_STATUS("MIFARE_Read()",status);
+    if (MFRC522::STATUS_OK == status) {
       LOG_BYTE_ARRAY(String("Data in block ") + String(MFRC_BLOCKADDR),buffer, size);
       uint32_t cookie = (uint32_t)buffer[0] << 24 
                        |(uint32_t)buffer[1] << 16
@@ -408,20 +488,19 @@ int mfrcWriteCard() {
   if (MFRC522::PICC_TYPE_MIFARE_UL == piccType) {
     Serial.println(F("Ultralight - skipp Authenticating"));
     for (int i=0; i < 4; i++) { //data is writen in blocks of 4 bytes (4 bytes per page)
-      status = (MFRC522::StatusCode) mfrc522.MIFARE_Ultralight_Write(MFRC_BLOCKADDR+i, &buffer[i*4], 4);
+      status =  mfrc522.MIFARE_Ultralight_Write(MFRC_BLOCKADDR+i, &buffer[i*4], 4);
     }    
   } else {
     Serial.println(F("Authenticating again using key B..."));
-    status = (MFRC522::StatusCode)mfrc522.PCD_Authenticate(
+    status = mfrc522.PCD_Authenticate(
         MFRC522::PICC_CMD_MF_AUTH_KEY_B, MFRC_BLOCKADDR, &_key, &(mfrc522.uid));
-    if (status != MFRC522::STATUS_OK) {
-      LOG_MFRC_STATUS("PCD_Authenticate() failed: ",status);
-    } else {
+    LOG_MFRC_STATUS("PCD_Authenticate()",status);
+    if (status == MFRC522::STATUS_OK) {
       LOG_BYTE_ARRAY(String("Writing data into block ") + String(MFRC_BLOCKADDR),buffer, sizeof(buffer));
-      status = (MFRC522::StatusCode)mfrc522.MIFARE_Write(MFRC_BLOCKADDR, buffer, sizeof(buffer));
+      status = mfrc522.MIFARE_Write(MFRC_BLOCKADDR, buffer, sizeof(buffer));
     }
   }
-  if (status != MFRC522::STATUS_OK) LOG_MFRC_STATUS("MIFARE_Write() failed: ",status);
+  LOG_MFRC_STATUS("MIFARE_Write()",status);
   return status == MFRC522::STATUS_OK ? MENU_MP3_OK : MENU_MP3_ERROR ;
 }
 
