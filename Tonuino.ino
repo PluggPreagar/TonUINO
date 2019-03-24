@@ -1,4 +1,4 @@
-/*/d/temp/jj$  find 0* -name "*.mp3" | while read f ; do  g="`echo $f | sed -e s:[^/0-9a-zA-Z._]:_:g -e 's:/\([0-9][0-9][^0-9]\):/0\1:' `" ;echo "$f    --->    $g"  ; done
+/*/d/temp/jj$   i=0;find * -name "*.mp3" | sort -n | while read f ; do let i=i+1; g="`echo ${i}_${f} | sed -e s:[^/0-9a-zA-Z._]:_:g -e 's/^\([0-9][^0-9]\)/0\1/' -e 's/^\([0-9][0-9][^0-9]\)/0\1/'  `" ;echo "$f    --->    $g"  ; done
 */
 #include "Arduino.h"
 
@@ -138,8 +138,6 @@ bool idle(unsigned long sleep);
 class MyButton
 {
   private:
-    //static int _buttons_idx = 0; 
-    //static MyButton _buttons[3]; 
     int m_pin = -1;
     char* m_name ;
     int m_stable = BTN_DEBOUNCE;
@@ -147,25 +145,26 @@ class MyButton
     bool m_isPressed = false;
     
   public:
+    static int _buttons_idx; // = 0; 
+    static MyButton* _buttons[5]; 
 
     MyButton(int pin, char* name)
-      : m_pin(pin), m_name(name){};
+      : m_pin(pin), m_name(name){
+        // if (_buttons_idx < sizeof(_buttons))
+          _buttons[_buttons_idx++] = this;
+      };
 
     void init() {
       pinMode(m_pin, INPUT_PULLUP );
     }
-
-    /*
-    MyButton(pin): _pin(pin) {
-      if (_buttons_idx < sizeof(_buttons))
-          _buttons[_buttons_idx++] = this;
-    };
+    
     // could be moved to longPress when longPress is called first 
     // and assume relevant keys are checked for longPress (will skipp if first key is pressed and evaluated) 
     static void readAll() {  
       for (int i = 0 ; i < _buttons_idx ; i++)
-          _buttons[i].read();
-    } */
+          _buttons[i]->read();
+    }
+
     bool read() {
       if (m_stable <0 ) {
         m_stable++ ; // debounce
@@ -185,7 +184,6 @@ class MyButton
     }; 
     
     bool longPress(String msg = "") { // and still pressing
-      read();
       return LOG_IF(m_isPressed && m_stable >= BTN_LONG_PRESS, m_name, msg);
     }
     bool shortPress(String msg = "") { // isRelease() - after shortPress
@@ -195,6 +193,8 @@ class MyButton
       return longPress(msg) ? 10 : shortPress(msg) ? 1 : 0 ;
     }
 };
+int MyButton::_buttons_idx = 0;
+MyButton* MyButton::_buttons[5] = {0,0,0,0,0};
 MyButton buttonDown = MyButton(BTN_DOWN_PIN,"DOWN");
 MyButton buttonMid = MyButton(BTN_MID_PIN,"MID");
 MyButton buttonUp = MyButton(BTN_UP_PIN,"UP");
@@ -439,8 +439,11 @@ class MP3: public DFMiniMp3< SoftwareSerial, MP3>
         do {
         
           idle(200);
-          delta = buttonUp.deltaByLongPressOrRelease("VoiceMenu") - buttonDown.deltaByLongPressOrRelease("VoiceMenu");  
-          if (delta != 0 ) {
+          MyButton::readAll();
+          delta = buttonUp.deltaByLongPressOrRelease("VoiceMenu") - buttonDown.deltaByLongPressOrRelease("VoiceMenu");
+          if (buttonMid.longPress("VoiceMenu")) {
+             returnValue = 0; // Abbruch 
+          }  else if (delta != 0 || !returnValue ) {
             returnValue = min(max(returnValue + delta, 1), numberOfOptions);
             if (MENU_CHOOSE_OPTION == previewFromFolder) {
               playMp3FolderTrack( startMessage + returnValue); // say message
@@ -456,8 +459,9 @@ class MP3: public DFMiniMp3< SoftwareSerial, MP3>
             }
           }
         
-        } while (!buttonMid.longPress("VoiceMenu") && (!buttonMid.shortPress("VoiceMenu") || returnValue == 0)); // tricky need longPress before shortPress
-        return buttonMid.longPress("VoiceMenu") ? 0 : returnValue ;
+        } while (!buttonMid.shortPress("VoiceMenu") && !!returnValue); // tricky need longPress before shortPress
+        LOG(F("voiceMenu: "), returnValue);
+        return returnValue ;
       }
 
 
@@ -584,12 +588,15 @@ class MFRC: public MFRC522
             // Admin Funktionen   // PP wann aufgerufen ??? , there are no files 320-322 // mean 330..332
             // else if (_mode == MODE_ADMIN) _special = mp3VoiceMenu( 320, MENU_CHOOSE_OPTION, 3);
         }
-        if (!_folder && !_mode){
+        if (!_folder || !_mode){
+          LOG(F("SETUP abgebrochen: "), String((!_folder) && (!_mode) ? " OK " : "FAIL"  ));
+          LOG(F("SETUP abgebrochen: "), String(!_folder ? "- " : String(_folder) ) + String(" / ") + String(!_mode ? "- " : String(_mode) ));
+          _mode = MODE_UNKNWON;
+          _folder = 1;
+          _track = 1;
+        } else {
           EEPROM.write(_folder,1);
           ret_value = write();
-        } else {
-          _mode = MODE_UNKNWON;
-          _folder = TRACK_NONE;
         }
       }
       led.setColor(LED_COLOR_MAIN);
@@ -706,19 +713,21 @@ void setup()
 
 
 void loop() {
-
   tick(); 
 
   if (checkTimer( timer, 200)) {
+    MyButton::readAll();
     if (buttonUp.longPress("Volume")) {
-        if (MODE_UNKNWON == _mode && !mp3.isPlaying())
+        if (MODE_UNKNWON == _mode && !mp3.isPlaying()) {
           mp3.folder(_folder+10);
-        else  
+          idle(1000); // leave time to release longPress-Button
+        } else  
           mp3.increaseVolume(); 
     } else if (buttonDown.longPress("Volume")) {
-        if (MODE_UNKNWON == _mode && !mp3.isPlaying())
-          mp3.folder(_folder+10);
-        else  
+        if (MODE_UNKNWON == _mode && !mp3.isPlaying()) {
+          mp3.folder(_folder-10);
+          idle(1000); // leave time to release longPress-Button
+        } else  
           mp3.decreaseVolume();
     } else if (buttonMid.longPress("Info/Setup/Halt")) {
         if (buttonDown.shortPress("Halt")) 
@@ -776,7 +785,7 @@ void loop() {
       }
       timer_all = 0;
     } else if (checkTimer(timer_all,60000UL)) {
-      LOGu(F("halt timer reached (1 min)"),timer_all);
+      LOGu(F("halt timer reached "),timer_all);
       halt();
     } // timer 
 
