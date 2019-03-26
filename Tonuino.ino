@@ -11,6 +11,20 @@
 
 // 20190105 add Ultralight
 
+
+/*TODO
+- admin menu on Long-press-ALL-Buttons (continue after release all buttons)
+    - config settings
+    - 
+- shuffle partylist
+- min/init/max - volumen
+- von-bis Option für alle Playmodes
+- shortcut - button click to play (if not playing) folder (use settings-mapping)
+- 5 Buttons
+- invertVolume-Buttons
+- code lock
+*/
+
 static const char* modeName[]={"UNKNOWN","Hörspielmodus","Albummodus"
           ,"Party Modus","Einzelmodus","Hörbuchmodus","ADMIN"};
 #define MODE_UNKNWON    0
@@ -67,7 +81,7 @@ const int _SBASE_ = __COUNTER__ + 1; // Index of 1st __COUNTER__ ref below
 #define _S1_ (sin((__COUNTER__ - _SBASE_) / 128.0 * M_PI) + 1.0) * 127.5 + 0.5,
 #define _S2_ _S1_ _S1_ _S1_ _S1_ _S1_ _S1_ _S1_ _S1_ // Expands to 8 items
 #define _S3_ _S2_ _S2_ _S2_ _S2_ _S2_ _S2_ _S2_ _S2_ // Expands to 64 items
-const uint8_t PROGMEM sineTable[] = { _S3_ _S3_ _S3_ _S3_ }; // 256 items
+// const uint8_t PROGMEM sineTable[] = { _S3_ _S3_ _S3_ _S3_ }; // 256 items
  
 // Similar to above, but for an 8-bit gamma-correction table.
 #define _GAMMA_ 2.6
@@ -78,6 +92,11 @@ const int _GBASE_ = __COUNTER__ + 1; // Index of 1st __COUNTER__ ref below
 const uint8_t PROGMEM gammaTable[] = { _G3_ _G3_ _G3_ _G3_ }; // 256 items
 
 
+
+static void LOG_(const __FlashStringHelper*  msg) {
+  Serial.print(msg);
+}
+
 static void LOG_(String msg) {
   Serial.print(msg);
 }
@@ -85,41 +104,49 @@ static void LOG_(String msg) {
 static void LOG_(int msg) {
   Serial.print(msg);
 }
+
+static void LOG_(uint8_t msg) {
+  Serial.print(msg);
+}
+
+static void LOG(uint8_t msg) {
+  Serial.println(msg);
+}
  
-static void LOG(String msg) {
+static void LOG(const __FlashStringHelper* msg) {
   Serial.println(msg);
 }
 
-static void LOG(String msg, int val) {
+static void LOG(const __FlashStringHelper* msg, int val) {
   Serial.print(msg);
   Serial.println(val);
 }
 
-static void LOGu(String msg, unsigned long val) {
+static void LOGu(const __FlashStringHelper* msg, unsigned long val) {
   Serial.print(msg);
   Serial.println(val);
 }
 
-static void LOG(String msg, String val) {
+static void LOG(const __FlashStringHelper* msg, String val) {
   Serial.print(msg);
   Serial.println(val);
 }
 
 static bool LOG_IF(bool value, String name, String msg) {
-  if (value) Serial.println(name + ": " + msg);
+  if (value) {Serial.print(name);Serial.print(": ");Serial.println(msg);}
   return value;
 }
 
-static void LOG_MODE(String msg) {
-  Serial.println(String(modeName[_mode]) + " -> " + msg);
+static void LOG_MODE(const __FlashStringHelper*  msg) {
+  Serial.print(modeName[_mode]);Serial.print(" -> ");Serial.println(msg);
 }
 
-static void LOG_MODE_TRACK(String msg) {
-  Serial.print(String(modeName[_mode]) + " -> " + msg + ": ");
-  Serial.println(_track);
+static void LOG_MODE_TRACK(const __FlashStringHelper*  msg) {
+  Serial.print(modeName[_mode]);Serial.print(" -> ");Serial.print(msg);
+  Serial.print(" (track: ");Serial.print(_track);Serial.println(")");
 }
 
-static void LOG_BYTE_ARRAY(String msg, byte *buffer, byte bufferSize) {
+static void LOG_BYTE_ARRAY(const __FlashStringHelper* msg, byte *buffer, byte bufferSize) {
   Serial.print(msg);
   for (byte i = 0; i < bufferSize; i++) {
     Serial.print(buffer[i] < 0x10 ? " 0" : " ");
@@ -128,7 +155,21 @@ static void LOG_BYTE_ARRAY(String msg, byte *buffer, byte bufferSize) {
   Serial.println();
 }
 
+
+static unsigned long _millis = millis();
+static unsigned long timer = millis();
+static unsigned long timer_mfrc = millis();
+static unsigned long timer_all = millis();
+
+bool checkTimer(unsigned long& timer, unsigned long count){
+  bool match = _millis > timer && !!timer; 
+  if (match || !timer) timer = _millis + count;
+  return match;
+}
+
+
 bool idle(unsigned long sleep);
+void wait4buttonRelease();
 
 // ------------------
 //    B u t t o n
@@ -137,7 +178,8 @@ bool idle(unsigned long sleep);
 #define BTN_DEBOUNCE    -1
 class MyButton
 {
-  private:
+  //private:
+  public:
     int m_pin = -1;
     char* m_name ;
     int m_stable = BTN_DEBOUNCE;
@@ -158,11 +200,14 @@ class MyButton
       pinMode(m_pin, INPUT_PULLUP );
     }
     
-    // could be moved to longPress when longPress is called first 
-    // and assume relevant keys are checked for longPress (will skipp if first key is pressed and evaluated) 
-    static void readAll() {  
-      for (int i = 0 ; i < _buttons_idx ; i++)
-          _buttons[i]->read();
+    static bool readAll() {
+      bool isPressed = false;  
+      for (int i = 0 ; i < _buttons_idx ; i++) {
+        isPressed =  _buttons[i]->read() || isPressed ; // force read to be executed everytime
+        // Serial.print(_buttons[i]->m_isPressed ? "+" : "." );Serial.print(_buttons[i]->m_stable);Serial.print(" ");Serial.print(_buttons[i]->m_stable_last);Serial.print(" / ");
+      }
+      // Serial.println();
+      return isPressed;
     }
 
     bool read() {
@@ -180,9 +225,12 @@ class MyButton
         }
       }
       // Serial.print( _name);Serial.print("  ");Serial.print(_stable_last);Serial.print( _isPressed ? " pressed " : " not pressed ");Serial.println( _stable);
-      return true;
+      return m_isPressed;
     }; 
     
+    bool isPressed() { 
+      return m_isPressed; 
+    }
     bool longPress(String msg = "") { // and still pressing
       return LOG_IF(m_isPressed && m_stable >= BTN_LONG_PRESS, m_name, msg);
     }
@@ -310,8 +358,8 @@ class MP3: public DFMiniMp3< SoftwareSerial, MP3>
       }
 
       static void OnPlayFinished(uint16_t track) {
-        LOG(F("MP3: Track beendet "), track);LOG_(_track);LOG_(" ");LOG(_mode);
-        if(_mode != MODE_UNKNWON /*&& _track == track   spiel sonst nicht next 153 (globale trackid) != 2 (folder trackid) ... */) { // suppress next-triggern whilst card setup is running ... 
+        LOG_(F("MP3: Track beendet "));LOG_((int)track);LOG_(F(" / "));LOG_MODE_TRACK(F(""));
+        if(_mode != MODE_UNKNWON && _track == track   /* spiel sonst nicht next 153 (globale trackid) != 2 (folder trackid) ... */) { // suppress next-triggern whilst card setup is running ... 
           delay(100);
           __mp3->next(); 
         }
@@ -322,14 +370,14 @@ class MP3: public DFMiniMp3< SoftwareSerial, MP3>
         bool serialRead = false; // wait for serial to be avail and than read by loop - falling edge
         bool busy = false;
         while (millis() < timer && ( wait4serial ? !serialRead || mySerial.available() : (busy = (LOW == digitalRead(MP3_BUSY_PIN))) ) ){
-          LOG( " wait");
+          LOG( F(" wait") );
           serialRead = mySerial.available();
           idle(wait4serial ? 100 : 10);
           //LOG_(" ");LOG_( serialRead ? " serialRead " : "-serialRead-" );LOG_( !!mySerial.available() ? " avail " : " not-avail " );
         }
         if (!busy)
             loop();
-        LOG_( wait4serial ? mySerial.available() ? " avail serial" : " miss serial" : " ign serial "); LOG_( busy ? " busy" : " no busy"); LOG(" waited " , millis() - (timer - ( !duration ? 2000 : duration)) );
+        LOG_( wait4serial ? mySerial.available() ? F(" avail serial") : F(" miss serial") : F(" ign serial ")); LOG_( busy ? F(" busy") : F(" no busy")); LOG( F(" waited ") , millis() - (timer - ( !duration ? 2000 : duration)) );
         return !busy;
       }
       
@@ -339,7 +387,7 @@ class MP3: public DFMiniMp3< SoftwareSerial, MP3>
         digitalWrite(MP3_PWR_PIN,HIGH);        
         begin(); // idle(2000);
         waitAvailable(3000, true); LOG(F("init mp3 begin"));
-        setVolume(10);
+        setVolume(1);
         waitAvailable(1000); LOG(F("init mp3 volume"));
         start();
         waitAvailable(1000); LOG(F("init mp3 track"));
@@ -365,16 +413,24 @@ class MP3: public DFMiniMp3< SoftwareSerial, MP3>
           start(); 
         }
       }
+      
+      void playMp3FolderTrackAndWait(uint16_t track){
+        playMp3FolderTrack(track);
+        unsigned long timeout = _millis + 1000;
+        while(!isPlaying() && _millis <= timeout){
+          idle(100);
+        };
+        do{
+          idle(500);
+        } while(isPlaying());
+        idle(1000);
+      }
 
-      void folder(uint8_t folder) {
+      void folder(uint16_t folder) {
         _folder=folder;
         led.resume();           
         led.setColor(LED_COLOR_MAIN);
-        playMp3FolderTrack(_folder );   //playAdvertisement( _folder ); // not playing always
-        idle(500);
-        while(isPlaying()){
-          idle(100);
-        }
+        playMp3FolderTrackAndWait( _folder );   //playAdvertisement( _folder ); // not playing always
         _track=1;
         first();
       }
@@ -393,7 +449,7 @@ class MP3: public DFMiniMp3< SoftwareSerial, MP3>
       void first() {
         led.resume();           
         _folderTracks = getFolderTrackCount(_folder);
-        LOG(String(_folderTracks) + " Dateien in Ordner " + _folder);
+        LOG_( _folderTracks );LOG_( F(" Dateien in Ordner ") );LOG( _folder );
         if (_mode == MODE_ALBUM) {
           _track = 1;
           LOG_MODE_TRACK(F("kompletten Ordner wiedergeben"));
@@ -416,7 +472,7 @@ class MP3: public DFMiniMp3< SoftwareSerial, MP3>
           _track = _track + random(1, _folderTracks ) ; // all but not current
           LOG_MODE_TRACK(F("zufälliger Track"));
         } else if (_mode == MODE_HOERSPIEL || _mode == MODE_EINZEL || _track == _folderTracks) {  // random | _spezial    // Hoerbuch = EEPROM.read
-          LOG_MODE(_track == _folderTracks ? "letzter Titel beendet" : "keinen neuen Track spielen" );
+          LOG_MODE(_track == _folderTracks ? F("letzter Titel beendet") : F("keinen neuen Track spielen") );
           _track = TRACK_NONE;
           sleep();
         } else {
@@ -431,13 +487,13 @@ class MP3: public DFMiniMp3< SoftwareSerial, MP3>
       }
 
 
-      int voiceMenu(int startMessage, int previewFromFolder,  int numberOfOptions = 0 ) {
-        int returnValue = 0;
-        int delta = 0;
+      uint16_t voiceMenu(uint16_t startMessage, uint16_t previewFromFolder,  uint8_t numberOfOptions = 0 ) {
+        uint16_t returnValue = 0;
+        uint16_t delta = 0;
         if (0 == numberOfOptions) numberOfOptions = getFolderTrackCount(previewFromFolder);
-        if (startMessage != 0) playMp3FolderTrack(startMessage);
-        do {
-        
+        if (startMessage != 0) playMp3FolderTrackAndWait(startMessage);
+        wait4buttonRelease();
+        do {        
           idle(200);
           MyButton::readAll();
           delta = buttonUp.deltaByLongPressOrRelease("VoiceMenu") - buttonDown.deltaByLongPressOrRelease("VoiceMenu");
@@ -448,10 +504,7 @@ class MP3: public DFMiniMp3< SoftwareSerial, MP3>
             if (MENU_CHOOSE_OPTION == previewFromFolder) {
               playMp3FolderTrack( startMessage + returnValue); // say message
             } else {
-              playMp3FolderTrack( returnValue); // say number
-              do {
-                idle(200);
-              } while (isPlaying());
+              playMp3FolderTrackAndWait( returnValue); // say number
               if (previewFromFolder == MENU_CHOOSE_FOLDER)
                 playFolderTrack(returnValue, 1);
               else
@@ -461,6 +514,7 @@ class MP3: public DFMiniMp3< SoftwareSerial, MP3>
         
         } while (!buttonMid.shortPress("VoiceMenu") && !!returnValue); // tricky need longPress before shortPress
         LOG(F("voiceMenu: "), returnValue);
+        wait4buttonRelease();
         return returnValue ;
       }
 
@@ -496,6 +550,16 @@ class MFRC: public MFRC522
       PCD_DumpVersionToSerial(); // Show details of PCD - MFRC522 Card Reader
     }
 
+    bool reInit(unsigned int retry = 2) {
+      unsigned long timeOut = _millis + 1000;
+      PCD_Init();
+      do {
+        idle(200);
+      } while(!PICC_IsNewCardPresent() && _millis <= timeOut);
+      LOG( _millis <= timeOut ? F("mfrc: reInit - card found") : F("mfrc: reInit - timeOut") );
+      return _millis <= timeOut || (retry>0 && reInit( --retry ));       // TODO ... there must be a better way to retry 
+    }
+
     int setup(bool force = false);
 
     void clear() { 
@@ -523,11 +587,11 @@ class MFRC: public MFRC522
       }
 
       if (MFRC522::STATUS_OK == status) {
-        LOG(F("Reading data from block "), String(MFRC_BLOCKADDR) + " ...");
+        LOG(F("Reading data from block "));
         status = MIFARE_Read(MFRC_BLOCKADDR, buffer, &size);
         LOG_MFRC_STATUS("MIFARE_Read()",status);
         if (MFRC522::STATUS_OK == status) {
-          LOG_BYTE_ARRAY(String("Data in block ") + String(MFRC_BLOCKADDR),buffer, size);
+          LOG_BYTE_ARRAY(F("Data in block ") /*+ String(MFRC_BLOCKADDR)*/,buffer, size);
           uint32_t cookie =  (uint32_t)buffer[0] << 24 
                            | (uint32_t)buffer[1] << 16
                            | (uint32_t)buffer[2] << 8
@@ -562,7 +626,7 @@ class MFRC: public MFRC522
         status = PCD_Authenticate( MFRC522::PICC_CMD_MF_AUTH_KEY_B, MFRC_BLOCKADDR, &key, &(uid));
         LOG_MFRC_STATUS("PCD_Authenticate()",status);
         if (status == MFRC522::STATUS_OK) {
-          LOG_BYTE_ARRAY(String("Writing data into block ") + String(MFRC_BLOCKADDR),buffer, sizeof(buffer));
+          LOG_BYTE_ARRAY(F("Writing data into block ") /*+ String(MFRC_BLOCKADDR)*/,buffer, sizeof(buffer));
           status = MIFARE_Write(MFRC_BLOCKADDR, buffer, sizeof(buffer));
         }
       }
@@ -589,8 +653,7 @@ class MFRC: public MFRC522
             // else if (_mode == MODE_ADMIN) _special = mp3VoiceMenu( 320, MENU_CHOOSE_OPTION, 3);
         }
         if (!_folder || !_mode){
-          LOG(F("SETUP abgebrochen: "), String((!_folder) && (!_mode) ? " OK " : "FAIL"  ));
-          LOG(F("SETUP abgebrochen: "), String(!_folder ? "- " : String(_folder) ) + String(" / ") + String(!_mode ? "- " : String(_mode) ));
+          LOG(F("SETUP abgebrochen! "));
           _mode = MODE_UNKNWON;
           _folder = 1;
           _track = 1;
@@ -621,17 +684,6 @@ static void LOG_MFRC_STATUS(char* msg,MFRC522::StatusCode status) {
 
 
 
-static unsigned long _millis = millis();
-static unsigned long timer = millis();
-static unsigned long timer_mfrc = millis();
-static unsigned long timer_all = millis();
-
-bool checkTimer(unsigned long& timer, unsigned long count){
-  bool match = _millis > timer && !!timer; 
-  if (match || !timer) timer = _millis + count;
-  return match;
-}
-
 void tick() {
   _millis = millis();
   led.service();
@@ -645,6 +697,13 @@ bool idle(unsigned long sleep) {
     delay(5);
   }
   return true;
+}
+
+void wait4buttonRelease() {
+  do {
+    tick(); // wait for release all Buttons
+  } while (MyButton::readAll());
+  idle(500);  
 }
 
 void updateColor(){
@@ -717,25 +776,44 @@ void loop() {
 
   if (checkTimer( timer, 200)) {
     MyButton::readAll();
-    if (buttonUp.longPress("Volume")) {
+    /*if (buttonMid.m_isPressed) {
+        Serial.print(buttonDown.m_isPressed ? "+" : "." );Serial.print(buttonDown.m_stable);Serial.print(" ");
+        Serial.print(buttonMid.m_isPressed ? "+" : "." );Serial.print(buttonMid.m_stable);Serial.print(" ");
+        Serial.print(buttonUp.m_isPressed ? "+" : "." );Serial.println(buttonUp.m_stable);
+    }*/
+    if (buttonMid.longPress("Info/Setup/Halt/Admin")) {
+        if (buttonDown.longPress("ADMIN") && buttonUp.longPress("ADMIN")) { // buttonUp cant be read ... whenn long press Down+Mid
+          mp3.pause();
+          if (mfrc.reInit()
+                && LOG_IF(mfrc.PICC_ReadCardSerial(), "ADMIN", "readSerial")
+                && LOG_IF(mfrc.read(), "ADMIN", "readData") ) {
+            mp3.playMp3FolderTrackAndWait( mfrc.setupCard( true ) );
+            mp3.first();
+            led.setColor( LED_COLOR_TRACK );
+          }
+          mfrc.PICC_HaltA();
+          mfrc.PCD_StopCrypto1();
+          timer_all = 0;
+          LOG(F("ADMIN END"));
+        } else if (buttonDown.isPressed() || buttonUp.isPressed()) {
+        }/* else if (buttonDown.shortPress("Halt")) {
+          halt();
+        else if (mp3.isPlaying()) {  // !!! isPlaying
+          mp3.playAdvertisement( _track );
+          wait4buttonRelease();
+        } */
+    } else if (buttonUp.longPress("Volume")) {
         if (MODE_UNKNWON == _mode && !mp3.isPlaying()) {
           mp3.folder(_folder+10);
-          idle(1000); // leave time to release longPress-Button
+          wait4buttonRelease();
         } else  
           mp3.increaseVolume(); 
     } else if (buttonDown.longPress("Volume")) {
         if (MODE_UNKNWON == _mode && !mp3.isPlaying()) {
           mp3.folder(_folder-10);
-          idle(1000); // leave time to release longPress-Button
+          wait4buttonRelease();
         } else  
           mp3.decreaseVolume();
-    } else if (buttonMid.longPress("Info/Setup/Halt")) {
-        if (buttonDown.shortPress("Halt")) 
-          halt();
-        else // if (mp3.isPlaying()) 
-          mp3.playAdvertisement( _track );
-        //else                
-        //  mp3.playMp3FolderTrack( mfrc.setupCard( ) ); // rename "abgebrochen" 802 in 801 / pause will mfrcSetupCard..
     } else if (buttonUp.shortPress("Next")) {
         if (MODE_UNKNWON == _mode && !mp3.isPlaying())
           mp3.folder(_folder+1);
@@ -754,35 +832,19 @@ void loop() {
           led.start();
           timer_mfrc = 0;
           if (MODE_UNKNWON == _mode) 
-              mp3.playMp3FolderTrack( mfrc.setupCard( true ) );
-          else {
-              mp3.first();
-              led.setColor( LED_COLOR_TRACK );
-          }
+              mp3.playMp3FolderTrackAndWait( mfrc.setupCard( true ) );
+           mp3.first();
+           led.setColor( LED_COLOR_TRACK );
         }
         mfrc.PICC_HaltA();
         mfrc.PCD_StopCrypto1();
-        idle(1000); // give time to release the button
         timer_all = 0; // setup may take a while
     } else if (MODE_UNKNWON == _mode) {
       //LOG(F("keep playing w/o card"));
-    } else if (mp3.isPlaying() && checkTimer(timer_mfrc,10000)) { // now proper way - DOES not work >> hack according https://github.com/miguelbalboa/rfid/issues/279#
-      mfrc.PCD_Init();
-      idle(200); // leider erkennt er manchmal nicht die karte ...
-      if (!mfrc.PICC_IsNewCardPresent() && idle(400) && !mfrc.PICC_IsNewCardPresent()) {
-        LOG(F("card is removed - retry "));
-        idle(200); // leider erkennt er manchmal nicht die karte ...
-        if (!mfrc.PICC_IsNewCardPresent()) {
-          LOG(F("card is removed - 1.2nd "));
-          mfrc.PCD_Init();
-          idle(200); // leider erkennt er manchmal nicht die karte ...
-          if (!mfrc.PICC_IsNewCardPresent()) {
-            LOG(F("card is removed - 2nd"));
-            fadeOut();
-            led.setColor( LED_COLOR_MAIN );
-          }
-        }
-      }
+    } else if (mp3.isPlaying() && checkTimer(timer_mfrc,10000) && !mfrc.reInit()) { // now proper way - DOES not work >> hack according https://github.com/miguelbalboa/rfid/issues/279#
+      LOG(F("card is removed"));
+      fadeOut();
+      led.setColor( LED_COLOR_MAIN );
       timer_all = 0;
     } else if (checkTimer(timer_all,60000UL)) {
       LOGu(F("halt timer reached "),timer_all);
