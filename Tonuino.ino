@@ -58,12 +58,12 @@ union Data { // == MIFARE_BUFFER == Shortcut
     byte version;
     byte mode;        // changed order (to Tonuino) !!  / Version2
     byte folder;
-    byte special;
-    byte special2;
+    byte param_1;
+    byte param_2;
   } tag;
   byte key;     // only shortcut if between 1 and 4 / will be 0x13 (19) if valid cookie
 } data[ DATA_SHORTCUT_COUNT + 2 ] = {
-  { 0x13, 0x37, 0xb3, 0x47, 0x02 ,0, 0, 0, 0 } // 0x1337 0xb347 magic cookie to identify our nfc tags + Version 1
+  { 0x13, 0x37, 0xb3, 0x47, 0x02 /*Version*/ ,0, 0, 0, 0 } // 0x1337 0xb347 magic cookie to identify our nfc tags + Version 1
  /*
 Der Sketch verwendet 24912 Bytes (81%) des Programmspeicherplatzes. Das Maximum sind 30720 Bytes.
 Globale Variablen verwenden 1473 Bytes (71%) des dynamischen Speichers, 575 Bytes für lokale Variablen verbleiben. Das Maximum sind 2048 Bytes.
@@ -72,7 +72,7 @@ Globale Variablen verwenden 1473 Bytes (71%) des dynamischen Speichers, 575 Byte
   ,{2}
   ,{3}
   ,{4} */
-  ,{0x00, 0x00, 0x00, 0x00, 0x02, MODE_FREE, 0x01}
+  ,{0x00, 0x00, 0x00, 0x00, 0x02, MODE_PARTY, 0x01}
 };
 
 #define DATA_TEMPALTE_IDX 0
@@ -81,10 +81,14 @@ Data& data_curr = data[ DATA_SHORTCUT_COUNT + 1 ];
 static uint8_t& _version = data_curr.tag.version;
 static uint8_t& _mode = data_curr.tag.mode;
 static uint8_t& _folder = data_curr.tag.folder;
+static uint8_t& _param_1 = data_curr.tag.param_1;  
+static uint8_t& _param_2 = data_curr.tag.param_2;
+static uint8_t  _track_first = 0;
 static uint8_t  _track = TRACK_NONE;
-static uint8_t& _special = data_curr.tag.special;
-static uint8_t& _special2 = data_curr.tag.special2;
-static uint8_t  _folderTracks = 0;
+static uint8_t  _track_count = 0;
+static uint8_t  _track_last = 0;
+static uint8_t  _track_free_lookup[255] = {}; 
+
 
 void swap( byte& a, byte& b) {
   byte t = a;
@@ -434,11 +438,9 @@ class MP3: public DFMiniMp3< SoftwareSerial, MP3>
         begin(); // idle(2000);
         waitAvailable(3000, true); LOG(F("init mp3 begin"));
         setVolume(1);
-        waitAvailable(1000); LOG(F("init mp3 volume"));
         start();
         waitAvailable(1000); LOG(F("init mp3 track"));
-        _mode = MODE_PARTY ; // | MODE_KEEP_ALIVE;
-        folder(1);
+        folder();
         //mp3.sendPacket(0x17, _folder); // loop folder
         waitAvailable(1000); LOG(F("init mp3 DONE"));
       }
@@ -479,62 +481,72 @@ class MP3: public DFMiniMp3< SoftwareSerial, MP3>
         playMp3FolderTrackAndWait( val ? MENU_MP3_OK : MENU_MP3_ERROR );
       }
       
-      void folder(uint16_t folder) {
-        _folder=folder;
-        led.resume();           
+      void folder(uint16_t folder = _folder) {
+        _folder = folder;
+        _track = 1;
         led.setColor(LED_COLOR_MAIN);
         playMp3FolderTrackAndWait( (uint16_t&) _folder );   //playAdvertisement( _folder ); // not playing always
-        _track = 1;
         first();
       }
 
       void previous() {
-        if (_mode == MODE_HOERSPIEL || _mode == MODE_EINZEL || _mode == MODE_PARTY) {
+        if (_mode == MODE_HOERSPIEL || _mode == MODE_EINZEL ) {
           LOG_MODE(F("Track von vorne spielen"));
         } else {
           LOG_MODE(F("vorheriger Track"));
-          if (_track != 1) _track = _track - 1;
-          if (_mode == MODE_HOERBUCH) EEPROM.write(_folder, _track);
+          if (_track != _track_first) _track = _track - 1;
+          if (_mode == MODE_HOERBUCH) EEPROM.write(_folder,  mode == PARTY ? _track_free_lookup [ _track ] : _track);
         }
         playFolderTrack(_folder, _track);
       }
 
       void first() {
-        led.resume();           
-        _folderTracks = getFolderTrackCount(_folder);
-        LOG_( _folderTracks );LOG_( F(" Dateien in Ordner ") );LOG( _folder );
-        if (_mode == MODE_ALBUM || _mode == MODE_UNKNWON || _mode == MODE_FREE)  {
-          _track = 1;
-          LOG_MODE_TRACK(F("kompletten Ordner wiedergeben"));
-        } else if (_mode == MODE_HOERSPIEL || _mode == MODE_PARTY) {
-          _track = random(1, _folderTracks + 1);
-          LOG_MODE_TRACK(F("zufälligen Track wiedergeben"));
-        } else if (_mode == MODE_EINZEL) {
-          _track = _special;
-          LOG_MODE_TRACK(F("eine Datei aus dem Odrdner abspielen"));
-        } else if (_mode == MODE_HOERBUCH) {
-          _track = EEPROM.read(_folder);
-          LOG_MODE_TRACK(F("kompletten Ordner spielen")); //   "Fortschritt merken"));
-        }
-        playFolderTrack(_folder, _track); 
+        _track_first = !_param_1 ? 1 : _param_1;
+        _track_last  = !_param_2 ? getFolderTparam_2t( _folder ) : _param_2;
+        _track_count = _track_last - _track_first + 1;
+        _track = _mode == MODE_HOERBUCH ? EEPROM.read( _folder ) : _track_first;
+        LOG_( _track_first )LOG_(F("-"));LOG_( _track_last );LOG_( F(" Dateien in Ordner ") );LOG( _folder );
+        play();
       }
 
       void next() {
-        led.resume();           
-        if (_mode == MODE_PARTY) {                                        
-          _track = _track + random(1, _folderTracks ) ; // all but not current
-          LOG_MODE_TRACK(F("zufälliger Track"));
-        } else if (_mode == MODE_HOERSPIEL || _mode == MODE_EINZEL || _track == _folderTracks) {  // random | _spezial    // Hoerbuch = EEPROM.read
-          LOG_MODE(_track == _folderTracks ? F("letzter Titel beendet") : F("keinen neuen Track spielen") );
+        if (_mode == MODE_HOERSPIEL || _mode == MODE_EINZEL || _track == _track_last) {  // random | _spezial    // Hoerbuch = EEPROM.read
+          LOG_MODE( _track == _track_last ? F("letzter Titel beendet") : F("keinen neuen Track spielen") );
           _track = TRACK_NONE;
           sleep();
         } else {
           _track = _track + 1;
-          LOG_MODE_TRACK(F("nächster Track"));
+          play();
         }
+      }
+
+      void play() {
+        led.resume();           
         if (_track != TRACK_NONE) {
-          _track = ( _track + _folderTracks ) % _folderTracks; 
-          playFolderTrack(_folder, _track);
+          static uint8_t track_rnd = 0;
+          if (_mode == MODE_PARTY) {                                        
+            // index = track-number, value = 0 mean track not played, value != 0 then track-to-play = value
+            // [ >0,  0,  0,  0 ] -- init (">" pointer) / play tracks 1:1
+            // play track 2' (out of 4, is track 2) -- mean that track 1 (at pointer) is free, but not track 2 (anymore)
+            // [  0, >1,  0,  0 ] -- reading 1st (>) free track is 1 and 2nd (>+1) free track is 3, 3rd is 4
+            // play track 3' (out of 3 left, is track 4) -- mean that track 4 should not be played again, whilst track 1 (at >Pointer) can be still played
+            // [  0,  1, >0,  1 ] -- reading 1st (>) free track is 3 and 2nd (>+1) free track is 1 (instead of 4)
+            // play track 2' (out of 2 left, is track 1) -- mean that track 1 schould not be played again, whilst track 3 (at >Pointer) can be still played
+            // [  0,  1,  0, >3 ] --  
+            // leaving the choice 1-out-of-1 for track 3
+            // [  0,  1,  0, 3 ]> 
+            track_rnd = _track + random(0, _track_count - _track + 1); // reducing choose-1-out-of-X-range with every played track
+            // save trackNo-should-be-played-now-if-one-after-one as substitute for track-is-played-now  
+            _track_free_lookup[ track_rnd ] = !_track_free_lookup[ _track ] ? _track : _track_free_lookup[ _track ]; 
+            _track_free_lookup[ _track ] = track_rnd; // just to support previous() 
+            LOG_(F("zufälliger Track "));LOG(track_rnd);
+          }
+          if (_track > _track_last) {
+            _track = _track_first + (( _track - _track_first ) % _track_count); 
+            if (0 != track_rnd)
+              memset(_track_free_lookup, 0, sizeof(_track_free_lookup));
+          }
+          playFolderTrack(_folder, !track_rnd ? _track : track_rnd);
           if (_mode == MODE_HOERBUCH) EEPROM.write(_folder, _track);
         }
       }
@@ -631,7 +643,7 @@ class MFRC: public MFRC522
           idle(200);
         } while(!(found=PICC_IsNewCardPresent()) && _millis <= timeOut);        
         LOG( found ? F("mfrc: reInit - card found") : F("mfrc: reInit - timeOut") );
-        found &=  LOG_IF(PICC_ReadCardSerial(), F("mfrc"), F("readSerial"));
+        found &=  LOG_IF(PICC_ReadCardSerial(), F("mfrc"), F("readSerial"), F("no-Serial"));
         state = found ? 3 : 2 ;        
       }
       return found || (initRetry>0 && reInit( --initRetry ));       // TODO ... there must be a better way to retry 
@@ -866,15 +878,15 @@ void writeData(uint8_t key = data_curr.key) {
   EEPROM.write(_folder,1); // init track
 }
 
-#define MENU_OPTION_SHORTCUT_SET    7
 #define MENU_OPTION_CARD_RESET      1
 #define MENU_OPTION_SET_VON_BIS     2
 #define MENU_OPTION_SET_VOLUME      3
 #define MENU_OPTION_SET_EQ          4
-#define MENU_OPTION_SET_STANDBY     8
-#define MENU_OPTION_INVERT_BUTTONS  10
-#define MENU_OPTION_CARD_RESET      11
-#define MENU_OPTION_CARD_BATCH      9
+#define MENU_OPTION_SET_STANDBY     5
+#define MENU_OPTION_SHORTCUT_SET    6
+#define MENU_OPTION_CARD_BATCH      7
+#define MENU_OPTION_INVERT_BUTTONS  8
+#define MENU_OPTION__COUNT          8
 
 int menu(uint8_t option = 0) {
 
@@ -896,7 +908,7 @@ int menu(uint8_t option = 0) {
                       && mp3.setValueByVoiceMenu( _folder, MENU_MP3_NUMBERS, MENU_CHOOSE_FOLDER, MENU_MP3_NUMBERS_COUNT)
                       && mp3.setValueByVoiceMenu( _mode, MENU_MP3_MODES, MENU_CHOOSE_OPTION, MENU_MP3_MODES_COUNT);
               if (state && _mode == MODE_EINZEL)
-                  state = mp3.setValueByVoiceMenu( _special, MENU_MP3_SELECT_FILE, _folder);
+                  state = mp3.setValueByVoiceMenu( _param_1, MENU_MP3_SELECT_FILE, _folder);
               if (!state) {
                 LOG(F("SETUP abgebrochen! "));
                 _mode = MODE_UNKNWON;
@@ -904,12 +916,12 @@ int menu(uint8_t option = 0) {
                 _track = 1;
                 mp3.playMp3FolderTrackAndWait(MENU_MP3_ERROR);
               } else  {
-                  writeData(data_curr.key);
+                  writeData();
               }
               break;
       case MENU_OPTION_SET_VON_BIS: 
-              if (mp3.setValueByVoiceMenu( _special, MENU_MP3_SELECT_FILE, _folder) 
-                    && mp3.setValueByVoiceMenu( _special2, MENU_MP3_SELECT_FILE, _folder,0 ,_special))  
+              if (mp3.setValueByVoiceMenu( _param_1, MENU_MP3_SELECT_FILE, _folder) 
+                    && mparam_2lueByVoiceMenu( _param_2, MENU_MP3_SELECT_FILE, _folder,0 ,_param_1))  
                   writeData();  
               break;
       case MENU_OPTION_SET_VOLUME: 
@@ -946,12 +958,12 @@ int menu(uint8_t option = 0) {
               break;
       case MENU_OPTION_CARD_BATCH: 
               LOG(F("Einzel-Modus - erstelle Karten im Batch"));
-              if (mp3.setValueByVoiceMenu( _special, MENU_MP3_SELECT_FILE, _folder) 
-                  && mp3.setValueByVoiceMenu( _special2, MENU_MP3_SELECT_FILE, _folder,0 ,_special) ) { // Von-Bis
+              if (mp3.setValueByVoiceMenu( _param_1, MENU_MP3_SELECT_FILE, _folder) 
+                  && mp3.setValueByVoiceMenu( _param_2, MENU_MP3_SELECT_FILE, _folder,0 ,_param_1) ) { // Von-Bis
                 mp3.playMp3FolderTrackAndWait(936); // 0936_batch_cards_intro
-                for (; _special <= _special2 && !buttonMid.longPress() ; _special++) {
-                  mp3.playMp3FolderTrackAndWait(_special);
-                  LOG(F(" Karte auflegen für Track "), _special);
+                for (; _param_1 <= _param_2 && !buttonMid.longPress() ; _param_1++) {
+                  mp3.playMp3FolderTrackAndWait(_param_1);
+                  LOG(F(" Karte auflegen für Track "), _param_1);
                   while (!mfrc.read( true ) && !(checkTimer( timer, 200) && MyButton::readAll() && buttonMid.longPress()) ) {
                     idle(200);
                   }
@@ -963,10 +975,10 @@ int menu(uint8_t option = 0) {
                     mp3.playMp3FolderTrackAndWait(mfrc.write());
                   } // write / cancel
                 } // for
-              } // special set
+              } // param_1 set
               break;
     } 
-  } while (runAsLoop && state && mp3.setValueByVoiceMenu(option , 900, MENU_CHOOSE_NUMBER, 5 ) ); // Options ..  END / Von-Bis / Min-Init-Max Volumne / Batch-Produce Card / EQ / ShortCut(1 bis 4) / StandBy-Timer / 
+  } while (runAsLoop && state && mp3.setValueByVoiceMenu(option , 900, MENU_CHOOSE_NUMBER, MENU_OPTION__COUNT ) ); // Options ..  END / Von-Bis / Min-Init-Max Volumne / Batch-Produce Card / EQ / ShortCut(1 bis 4) / StandBy-Timer / 
   led.setColor(LED_COLOR_MAIN);
 }
 
@@ -992,6 +1004,7 @@ void loop() {
           } 
 
       } else if (buttonMid.shortPress(F("Start/Pause"))) {
+
               mp3.pauseResume();        
               wait4buttonRelease();
       
