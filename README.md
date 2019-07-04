@@ -1,10 +1,32 @@
-# TonUINO
-Die DIY Musikbox (nicht nur) für Kinder
+# TonUINO - Woody
+Die DIY Musikbox (nicht nur) für Kinder - Mobile LED Edition
 
 # Special
-- refactor code for easy reading (tbd)
-- low power consumption (one lipo) (tbd)
-- remerge with original Put'nPlay (tbd)
+  - mobile
+    - all HALT
+    - timer ..
+  - LED-Ring
+    - different style for default, play, setup
+  - Playmode
+    - FREE_MODE - access every folder, track w/o tag
+    - shuffle with previous-track 
+    - tag continous detection - stop playing when tag is removed
+    - delay Volume-up 
+    - standbyTimer - stop if not playing for a while
+    - sleepTimer - to stop if playing
+  menue
+    - clustered options (volume menu for min+init+max setting)
+    - von-bis track selection as generial option
+    - shortcut / 3vs.5-Button / Navigation-vs.-Vol-Switch
+    - shortcut - button click to play (if not playing) folder (use settings-mapping)
+  admin
+    - data migration to current version
+  prog
+    - tighten algorithm
+    - shortcut (simulate tag and so have all functions as tags)
+    - checkTimer can handle retryCount
+
+
 
 
 # Change Log
