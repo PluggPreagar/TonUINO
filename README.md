@@ -4,6 +4,7 @@ Die DIY Musikbox (nicht nur) für Kinder - Mobile LED Edition
 # Special
   - mobile
     - all HALT
+    - switch on by right-Button / switch off by MID-Long+Left-Short
     - timer ..
   - LED-Ring
     - different style for default, play, setup
